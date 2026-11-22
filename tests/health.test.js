@@ -1,53 +1,62 @@
 import { jest } from '@jest/globals';
 
+const mockHealthCheck = jest.fn().mockResolvedValue(true);
+
 jest.unstable_mockModule('../src/db.js', () => ({
   default: null,
   query: jest.fn(),
   getClient: jest.fn(),
-  healthCheck: jest.fn().mockResolvedValue(true),
+  healthCheck: mockHealthCheck,
 }));
 
 const { default: app } = await import('../src/index.js');
 const request = (await import('supertest')).default;
 
-describe('Health Check Endpoint', () => {
-  describe('GET /health', () => {
-    it('should return a health status', async () => {
-      const response = await request(app)
-        .get('/health')
-        .expect(200);
+afterEach(() => {
+  mockHealthCheck.mockReset();
+  mockHealthCheck.mockResolvedValue(true);
+});
 
-      expect(response.body).toHaveProperty('status');
-      expect(response.body).toHaveProperty('timestamp');
-      expect(response.body).toHaveProperty('uptime');
-      expect(response.body).toHaveProperty('database');
-    });
+describe('Health check endpoints', () => {
+  it('keeps GET /health compatible with the existing health response', async () => {
+    const response = await request(app).get('/health').expect(200);
+    expect(response.body.status).toBe('healthy');
+    expect(response.body.database).toBe('connected');
+    expect(typeof response.body.uptime).toBe('number');
+    expect(Number.isNaN(Date.parse(response.body.timestamp))).toBe(false);
+  });
 
-    it('should return healthy status when database is available', async () => {
-      const response = await request(app)
-        .get('/health')
-        .expect(200);
+  it('does not query PostgreSQL for liveness', async () => {
+    mockHealthCheck.mockResolvedValue(false);
+    const response = await request(app).get('/health/live').expect(200);
+    expect(response.body.status).toBe('alive');
+    expect(typeof response.body.uptime).toBe('number');
+    expect(mockHealthCheck).not.toHaveBeenCalled();
+  });
 
-      expect(response.body.status).toMatch(/healthy|degraded/);
-    });
+  it('returns readiness 200 when PostgreSQL is accessible', async () => {
+    const response = await request(app).get('/health/ready').expect(200);
+    expect(response.body.status).toBe('healthy');
+    expect(response.body.database).toBe('connected');
+  });
 
-    it('should have a valid ISO timestamp', async () => {
-      const response = await request(app)
-        .get('/health')
-        .expect(200);
+  it('returns readiness 503 when PostgreSQL is not accessible', async () => {
+    mockHealthCheck.mockResolvedValue(false);
+    const response = await request(app).get('/health/ready').expect(503);
+    expect(response.body.status).toBe('degraded');
+    expect(response.body.database).toBe('disconnected');
+  });
 
-      const timestamp = new Date(response.body.timestamp);
-      expect(timestamp).toBeInstanceOf(Date);
-      expect(timestamp.toString()).not.toBe('Invalid Date');
-    });
-
-    it('should return uptime as a number', async () => {
-      const response = await request(app)
-        .get('/health')
-        .expect(200);
-
-      expect(typeof response.body.uptime).toBe('number');
-      expect(response.body.uptime).toBeGreaterThan(0);
-    });
+  it('returns a safe 503 response when the database health check throws', async () => {
+    mockHealthCheck.mockRejectedValue(new Error('Sensitive database error'));
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await request(app).get('/health/ready').expect(503);
+      expect(response.body.status).toBe('unhealthy');
+      expect(response.body.database).toBe('disconnected');
+      expect(JSON.stringify(response.body)).not.toContain('Sensitive database error');
+    } finally {
+      log.mockRestore();
+    }
   });
 });

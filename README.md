@@ -11,7 +11,8 @@ dotNOVI is een **student version** - een werkende applicatie zonder DevOps-confi
 - **REST API** voor notitiemanagement (CRUD)
 - **Web Interface** met EJS templates
 - **PostgreSQL database** integratie
-- **Health Check** endpoint voor monitoring
+- **Health checks** voor liveness en database-readiness
+- **Versie-endpoint** voor controle van een deployment
 - **Gestructureerde tests** met Jest en Supertest
 - **Code quality** tools (ESLint)
 
@@ -118,18 +119,36 @@ Content-Type: application/json
 DELETE /api/notes/:id
 ```
 
-### Health Check
+### Deploymentversie
 
-```bash
-# Health status
-GET /health
+```http
+GET /version
 ```
 
-Respons:
+Geeft de applicatienaam, versie uit `package.json` en de met `APP_COMMIT_SHA` ingestelde commit-SHA terug. Zonder deze variabele is de commit `unknown`. Bij deployment moet de SHA overeenkomen met de image die daadwerkelijk draait.
+
+```json
+{
+  "name": "dotNOVI",
+  "version": "1.0.0",
+  "commit": "7f3a91c"
+}
+```
+
+### Health checks
+
+- `GET /health/live`: controleert of de HTTP-server reageert; geen databaseverbinding nodig. HTTP 200 zolang de route verwerkt kan worden.
+- `GET /health/ready`: controleert of PostgreSQL bereikbaar is. HTTP 200 bij een werkende verbinding, anders HTTP 503.
+- `GET /health`: bestaande route, blijft beschikbaar als alias voor `/health/ready`.
+
+Zonder `DATABASE_URL` kan `/health/live` dus HTTP 200 geven terwijl `/health/ready` HTTP 503 geeft. Gebruik tijdens de eerste cloudles (zonder database) de databaseafhankelijke readinessroute **niet** als verplichte Azure-readinessprobe.
+
+Voorbeeld bij een werkende database:
+
 ```json
 {
   "status": "healthy",
-  "timestamp": "2024-01-15T10:30:00.000Z",
+  "timestamp": "2026-11-22T10:30:00.000Z",
   "uptime": 123.456,
   "database": "connected"
 }
@@ -142,6 +161,7 @@ Respons:
 | `PORT` | Server port | 3000 |
 | `NODE_ENV` | Development/production | development |
 | `DATABASE_URL` | PostgreSQL connection string | (optioneel) |
+| `APP_COMMIT_SHA` | Commit-ID van de gedeployde versie, ingesteld door deployment | `unknown` |
 
 ## Database Schema
 
@@ -178,7 +198,8 @@ dotNOVI-app/
 │   ├── index.js           # Main Express app
 │   ├── db.js              # Database connection
 │   ├── routes/
-│   │   ├── health.js      # Health check route
+│   │   ├── health.js      # Liveness and readiness routes
+│   │   ├── version.js     # Deployment version route
 │   │   └── notes.js       # Notes CRUD routes
 │   ├── views/
 │   │   ├── layout.ejs     # Base template
@@ -189,6 +210,7 @@ dotNOVI-app/
 │       └── init.sql       # Database schema
 ├── tests/
 │   ├── health.test.js
+│   ├── version.test.js
 │   └── notes.test.js
 ├── package.json
 ├── .env.example
